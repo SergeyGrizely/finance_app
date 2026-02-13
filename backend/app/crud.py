@@ -54,9 +54,6 @@ def get_user_statistics(db: Session, owner_id: int, period: str = "month"):
         "expense_by_category": {k: float(v) for k, v in expense_by_category.items()},
     }
 
-
-
-
 def create_user(db: Session, user: schemas.UserCreate):
     from passlib.context import CryptContext
     pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")

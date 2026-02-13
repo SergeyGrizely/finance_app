@@ -26,7 +26,6 @@ class Transaction(Base):
 
 class EmailVerification(Base):
     __tablename__ = "email_verifications"
-
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String, nullable=False, index=True)
     code = Column(String, nullable=False)
