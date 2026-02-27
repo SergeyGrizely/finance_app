@@ -19,70 +19,76 @@ def get_user_statistics(
 ):
     """
     Получает статистику пользователя.
-    
-    Если start_date и end_date переданы - используются они.
-    Иначе вычисляются по period.
     """
-    now = datetime.utcnow().date()
-    
-    # Если даты явно переданы - используем их
-    if start_date and end_date:
-        filter_start = datetime.combine(start_date, datetime.min.time())
-        filter_end = datetime.combine(end_date, datetime.max.time())
-        print(f"  📅 Используются явные даты: {start_date} - {end_date}")
-    else:
-        # Иначе вычисляем по period
-        if period == "day":
-            start = now - timedelta(days=1)
-            end = now
-        elif period == "week":
-            start = now - timedelta(weeks=1)
-            end = now
-        elif period == "month":
-            start = now - timedelta(days=30)
-            end = now
-        elif period == "year":
-            start = now - timedelta(days=365)
-            end = now
-        else:
-            start = datetime(1970, 1, 1).date()
-            end = now
+    try:
+        now = datetime.utcnow().date()
         
-        filter_start = datetime.combine(start, datetime.min.time())
-        filter_end = datetime.combine(end, datetime.max.time())
-        print(f"  📅 Используется period '{period}': {start} - {end}")
+        # Если даты явно переданы - используем их
+        if start_date and end_date:
+            filter_start = datetime.combine(start_date, datetime.min.time())
+            filter_end = datetime.combine(end_date, datetime.max.time())
+            print(f"  📅 Используются явные даты: {start_date} - {end_date}")
+        else:
+            # Иначе вычисляем по period
+            if period == "day":
+                start = now - timedelta(days=1)
+                end = now
+            elif period == "week":
+                start = now - timedelta(weeks=1)
+                end = now
+            elif period == "month":
+                start = now - timedelta(days=30)
+                end = now
+            elif period == "year":
+                start = now - timedelta(days=365)
+                end = now
+            else:
+                start = datetime(1970, 1, 1).date()
+                end = now
+            
+            filter_start = datetime.combine(start, datetime.min.time())
+            filter_end = datetime.combine(end, datetime.max.time())
+            print(f"  📅 Используется period '{period}': {start} - {end}")
 
-    # Получаем транзакции по дате (не по created_at!)
-    transactions = db.query(models.Transaction).filter(
-        models.Transaction.owner_id == owner_id,
-        models.Transaction.date >= filter_start,  # ← используем date, не created_at
-        models.Transaction.date <= filter_end
-    ).all()
+        # Получаем транзакции
+        transactions = db.query(models.Transaction).filter(
+            models.Transaction.owner_id == owner_id,
+            models.Transaction.date >= filter_start.date(),
+            models.Transaction.date <= filter_end.date()
+        ).all()
 
-    print(f"  🔍 Найдено транзакций: {len(transactions)}")
-    for t in transactions:
-        print(f"    - {t.date}: {t.type} {t.category} {t.amount}")
+        print(f"  🔍 Найдено транзакций: {len(transactions)}")
+        for t in transactions:
+            print(f"    - {t.date}: {t.type} {t.category} {t.amount}")
 
-    total_income = 0.0
-    total_expense = 0.0
-    income_by_category = {}
-    expense_by_category = {}
+        total_income = 0.0
+        total_expense = 0.0
+        income_by_category = {}
+        expense_by_category = {}
 
-    for t in transactions:
-        if t.type == "income":
-            total_income += t.amount
-            income_by_category[t.category] = income_by_category.get(t.category, 0) + t.amount
-        else:  # expense
-            total_expense += t.amount
-            expense_by_category[t.category] = expense_by_category.get(t.category, 0) + t.amount
+        for t in transactions:
+            if t.type == "income":
+                total_income += t.amount
+                income_by_category[t.category] = income_by_category.get(t.category, 0) + t.amount
+            else:
+                total_expense += t.amount
+                expense_by_category[t.category] = expense_by_category.get(t.category, 0) + t.amount
 
-    return {
-        "total_income": float(total_income),
-        "total_expense": float(total_expense),
-        "balance": float(total_income - total_expense),
-        "income_by_category": {k: float(v) for k, v in income_by_category.items()},
-        "expense_by_category": {k: float(v) for k, v in expense_by_category.items()},
-    }
+        return {
+            "total_income": float(total_income),
+            "total_expense": float(total_expense),
+            "balance": float(total_income - total_expense),
+            "income_by_category": {k: float(v) for k, v in income_by_category.items()},
+            "expense_by_category": {k: float(v) for k, v in expense_by_category.items()},
+        }
+    
+    except Exception as e:
+        print(f"❌ Ошибка в get_user_statistics: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
+
+# ... остальные функции ...
 
 def create_user(db: Session, user: schemas.UserCreate):
     from passlib.context import CryptContext
