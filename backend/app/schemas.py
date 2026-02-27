@@ -31,11 +31,11 @@ class TransactionCreate(BaseModel):
     category: str
     note: Optional[str] = ""
     type: str = "expense"
-    date: Optional[date] = None  # ← добавить, если не указано - будет сегодня
+    date: Optional[date] = None  # ✅ теперь должно работать
 
 class TransactionOut(TransactionBase):
     id: int
-    date: date  # ← добавить
+    date: date
     created_at: datetime
     owner_id: int
 
