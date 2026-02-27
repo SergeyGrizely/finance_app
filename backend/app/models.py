@@ -1,6 +1,6 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Boolean
+from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Boolean, Date
 from sqlalchemy.orm import relationship
-from datetime import datetime
+from datetime import datetime, date
 from .database import Base
 
 class User(Base):
@@ -8,8 +8,8 @@ class User(Base):
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String, unique=True, index=True, nullable=False)
     hashed_password = Column(String, nullable=False)
-    name = Column(String, nullable=False)          # никнейм
-    is_verified = Column(Boolean, default=False)   # подтверждена ли почта
+    name = Column(String, nullable=False)
+    is_verified = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     transactions = relationship("Transaction", back_populates="owner")
 
@@ -20,6 +20,7 @@ class Transaction(Base):
     category = Column(String, nullable=False)
     note = Column(String, default="")
     type = Column(String, default="expense")  # "income" или "expense"
+    date = Column(Date, default=date.today)  # ← ДОБАВИТЬ ЭТО ПОЛЕ!
     created_at = Column(DateTime, default=datetime.utcnow)
     owner_id = Column(Integer, ForeignKey("users.id"))
     owner = relationship("User", back_populates="transactions")
@@ -29,9 +30,6 @@ class EmailVerification(Base):
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String, nullable=False, index=True)
     code = Column(String, nullable=False)
-    password = Column(String, nullable=True)  # если сохраняешь пароль
-    name = Column(String, nullable=True)      # если сохраняешь имя
+    password = Column(String, nullable=True)
+    name = Column(String, nullable=True)
     expires_at = Column(DateTime, nullable=False)
-     
-
-

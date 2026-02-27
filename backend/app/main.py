@@ -1,20 +1,19 @@
-from fastapi import FastAPI, Depends, HTTPException, status, Path
+from fastapi import FastAPI, Depends, HTTPException, status, Path, Query
 from sqlalchemy.orm import Session
 from . import database, models, schemas, crud, auth
 from .database import engine, get_db
 from fastapi.security import OAuth2PasswordRequestForm
-from datetime import timedelta
+from datetime import timedelta, datetime, date
 from .schemas import StatisticsOut
 from . import email_service, schemas
-from datetime import datetime, timedelta
-from fastapi import FastAPI, HTTPException, Body
+from fastapi import Body
 from .email_service import send_code, generate_code
 
 models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Finance API")
 
-verification_codes = {}  # хранение временных  кодов (email: код)
+verification_codes = {}
 
 @app.get("/health")
 def health():
@@ -27,14 +26,11 @@ def request_registration(
     name: str = Body(...),
     db: Session = Depends(get_db)
 ):
-    # Проверка, есть ли уже пользователь
     if crud.get_user_by_email(db, email):
         raise HTTPException(status_code=400, detail="Email уже зарегистрирован")
 
-    # Сохраняем временного пользователя в EmailVerification
     code = crud.create_email_verification(db, email, password, name)
 
-    # Отправка кода по email
     try:
         send_code(email, code)
     except Exception as e:
@@ -48,9 +44,6 @@ def confirm_registration(
     code: str = Body(...),
     db: Session = Depends(get_db)
 ):
-    from . import crud, schemas
-
-    # Проверка кода через БД
     record = db.query(crud.EmailVerification).filter(
         crud.EmailVerification.email == email,
         crud.EmailVerification.code == code,
@@ -60,17 +53,14 @@ def confirm_registration(
     if not record:
         raise HTTPException(status_code=400, detail="Неверный код или срок действия истёк")
 
-    # Создаём пользователя и ставим is_verified=True
     user_data = schemas.UserCreate(
         email=record.email,
         password=record.password,
         name=record.name,
-        is_verified=True      # теперь это законно
+        is_verified=True
     )
     user = crud.create_user(db, user_data)
 
-
-    # Удаляем запись с кодом
     db.delete(record)
     db.commit()
 
@@ -89,30 +79,49 @@ def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db:
     access_token = auth.create_access_token(data={"sub": user.email}, expires_delta=access_token_expires)
     return {"access_token": access_token, "token_type": "bearer"}
 
-# Профиль пользователя
-@app.get("/profile", response_model=schemas.UserOut)
-def get_profile(current_user = Depends(auth.get_current_user)):
-    return current_user
-
 @app.put("/profile")
 def update_profile(
     name: str = None,
     current_user = Depends(auth.get_current_user),
     db: Session = Depends(get_db)
 ):
-    # Обновление имени пользователя и т.д.
     pass
 
 @app.get("/statistics", response_model=schemas.StatisticsOut)
 def get_statistics(
-    period: str = "month",
+    period: str = Query("month"),
+    start_date: str = Query(None),  # ← 2026-02-13
+    end_date: str = Query(None),    # ← 2026-02-13
     current_user = Depends(auth.get_current_user),
     db: Session = Depends(get_db)
 ):
-    stats = crud.get_user_statistics(db=db, owner_id=current_user.id, period=period)
+    # Парсим даты
+    start = None
+    end = None
+    
+    if start_date:
+        try:
+            start = datetime.fromisoformat(start_date).date()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Неверный формат start_date (используйте YYYY-MM-DD)")
+    
+    if end_date:
+        try:
+            end = datetime.fromisoformat(end_date).date()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Неверный формат end_date (используйте YYYY-MM-DD)")
+    
+    print(f"📊 API: period={period}, start={start}, end={end}, user={current_user.id}")
+    
+    stats = crud.get_user_statistics(
+        db=db,
+        owner_id=current_user.id,
+        period=period,
+        start_date=start,
+        end_date=end
+    )
     return stats
 
-# Transactions
 @app.post("/transactions", response_model=schemas.TransactionOut)
 def create_transaction(tx: schemas.TransactionCreate, current_user = Depends(auth.get_current_user), db: Session = Depends(get_db)):
     return crud.create_transaction(db, owner_id=current_user.id, tx=tx)
@@ -120,8 +129,6 @@ def create_transaction(tx: schemas.TransactionCreate, current_user = Depends(aut
 @app.get("/transactions", response_model=list[schemas.TransactionOut])
 def list_transactions(current_user = Depends(auth.get_current_user), db: Session = Depends(get_db)):
     return crud.get_transactions_for_user(db, owner_id=current_user.id)
-
-from fastapi import Body
 
 @app.put("/transactions/{tx_id}", response_model=schemas.TransactionOut)
 def update_transaction(
