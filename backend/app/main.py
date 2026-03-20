@@ -5,22 +5,26 @@ from .database import engine, get_db
 from fastapi.security import OAuth2PasswordRequestForm
 from datetime import timedelta, datetime, date
 from .schemas import StatisticsOut
-from . import email_service, schemas
+from . import email_service
 from fastapi import Body
 from .email_service import send_code, generate_code
+from fastapi import BackgroundTasks
+from fastapi import UploadFile, File
+import json
+from typing import List
 
 models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Finance API")
 
-verification_codes = {}
-
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
+# регистрация и верификация (без изменений, но проверьте импорты)
 @app.post("/register/request")
 def request_registration(
+    background_tasks: BackgroundTasks,
     email: str = Body(...),
     password: str = Body(...),
     name: str = Body(...),
@@ -31,10 +35,7 @@ def request_registration(
 
     code = crud.create_email_verification(db, email, password, name)
 
-    try:
-        send_code(email, code)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Ошибка отправки кода: {e}")
+    background_tasks.add_task(email_service.send_code, email, code)
 
     return {"detail": "Код отправлен на email"}
 
@@ -44,10 +45,11 @@ def confirm_registration(
     code: str = Body(...),
     db: Session = Depends(get_db)
 ):
-    record = db.query(crud.EmailVerification).filter(
-        crud.EmailVerification.email == email,
-        crud.EmailVerification.code == code,
-        crud.EmailVerification.expires_at > datetime.utcnow()
+    from .models import EmailVerification  # если нужно, но можно импортировать сверху
+    record = db.query(EmailVerification).filter(
+        EmailVerification.email == email,
+        EmailVerification.code == code,
+        EmailVerification.expires_at > datetime.utcnow()
     ).first()
 
     if not record:
@@ -90,12 +92,11 @@ def update_profile(
 @app.get("/statistics", response_model=schemas.StatisticsOut)
 def get_statistics(
     period: str = Query("month"),
-    start_date: str = Query(None),  # ← 2026-02-13
-    end_date: str = Query(None),    # ← 2026-02-13
+    start_date: str = Query(None),
+    end_date: str = Query(None),
     current_user = Depends(auth.get_current_user),
     db: Session = Depends(get_db)
 ):
-    # Парсим даты
     start = None
     end = None
     
@@ -122,18 +123,73 @@ def get_statistics(
     )
     return stats
 
+@app.get("/transactions/export")
+def export_transactions(
+    current_user = Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
+    transactions = db.query(models.Transaction).filter(
+        models.Transaction.owner_id == current_user.id
+    ).all()
+
+    return [
+        {
+            "amount": t.amount,
+            "category": t.category,
+            "note": t.note,
+            "type": t.type,
+            "date": t.date.isoformat()
+        }
+        for t in transactions
+    ]
+
+@app.post("/transactions/import")
+async def import_transactions(
+    file: UploadFile = File(...),
+    current_user = Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
+    try:
+        content = await file.read()
+        data = json.loads(content)
+
+        for item in data:
+            tx = models.Transaction(
+                amount=item["amount"],
+                category=item["category"],
+                note=item.get("note", ""),
+                type=item.get("type", "expense"),
+                date=date.fromisoformat(item["date"]),
+                owner_id=current_user.id
+            )
+            db.add(tx)
+
+        db.commit()
+
+        return {"message": "Импорт выполнен"}
+
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Ошибка импорта: {e}")
+
 @app.post("/transactions", response_model=schemas.TransactionOut)
-def create_transaction(tx: schemas.TransactionCreate, current_user = Depends(auth.get_current_user), db: Session = Depends(get_db)):
+def create_transaction(
+    tx: schemas.TransactionCreate,
+    current_user = Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
     return crud.create_transaction(db, owner_id=current_user.id, tx=tx)
 
 @app.get("/transactions", response_model=list[schemas.TransactionOut])
-def list_transactions(current_user = Depends(auth.get_current_user), db: Session = Depends(get_db)):
+def list_transactions(
+    current_user = Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
     return crud.get_transactions_for_user(db, owner_id=current_user.id)
 
 @app.put("/transactions/{tx_id}", response_model=schemas.TransactionOut)
 def update_transaction(
     tx_id: int,
-    tx: schemas.TransactionCreate = Body(...),
+    tx: schemas.TransactionUpdate,
     current_user = Depends(auth.get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -145,10 +201,17 @@ def update_transaction(
     if not db_tx:
         raise HTTPException(status_code=404, detail="Transaction not found")
 
-    db_tx.amount = tx.amount
-    db_tx.category = tx.category
-    db_tx.note = tx.note
-    db_tx.type = tx.type
+    if tx.amount is not None:
+        db_tx.amount = tx.amount
+    if tx.category is not None:
+        db_tx.category = tx.category
+    if tx.note is not None:
+        db_tx.note = tx.note
+    if tx.type is not None:
+        db_tx.type = tx.type
+    if tx.date is not None:
+        db_tx.date = tx.date
+
     db.commit()
     db.refresh(db_tx)
     return db_tx

@@ -1,6 +1,9 @@
-from pydantic import BaseModel, EmailStr
+import datetime
+from pydantic import BaseModel, EmailStr, Field
 from typing import Optional, List, Dict
-from datetime import datetime, date
+from datetime import date as date_type  # можно и так, но для единообразия лучше datetime.date
+
+# ====================== Базовые схемы ======================
 
 class UserCreate(BaseModel):
     email: EmailStr
@@ -18,7 +21,9 @@ class UserOut(BaseModel):
     name: str
 
     class Config:
-        orm_mode = True
+        from_attributes = True
+
+# ====================== Транзакции ======================
 
 class TransactionBase(BaseModel):
     amount: float
@@ -26,21 +31,16 @@ class TransactionBase(BaseModel):
     note: Optional[str] = ""
     type: str = "expense"
 
-class TransactionCreate(BaseModel):
-    amount: float
-    category: str
-    note: Optional[str] = ""
-    type: str = "expense"
-    date: Optional[date] = None  # ✅ теперь должно работать
+class TransactionCreate(TransactionBase):
+    date: Optional[datetime.date] = None   # явно datetime.date
 
 class TransactionOut(TransactionBase):
     id: int
-    date: date
-    created_at: datetime
+    date: datetime.date   # явно datetime.date
     owner_id: int
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class TransactionsList(BaseModel):
     transactions: List[TransactionOut]
@@ -50,7 +50,16 @@ class TransactionUpdate(BaseModel):
     category: Optional[str] = None
     note: Optional[str] = None
     type: Optional[str] = None
-    date: Optional[date] = None
+    date: Optional[datetime.date] = Field(default=None, description="Дата транзакции")   # явно datetime.date
+
+class TransactionExport(BaseModel):
+    amount: float
+    category: str
+    note: Optional[str] = ""
+    type: str
+    date: datetime.date
+
+# ====================== Статистика ======================
 
 class StatisticsOut(BaseModel):
     total_income: float
@@ -58,6 +67,8 @@ class StatisticsOut(BaseModel):
     balance: float
     income_by_category: Dict[str, float]
     expense_by_category: Dict[str, float]
+
+# ====================== Регистрация / верификация ======================
 
 class RegisterRequest(BaseModel):
     email: EmailStr

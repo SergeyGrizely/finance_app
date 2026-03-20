@@ -19,9 +19,8 @@ class Transaction(Base):
     amount = Column(Float, nullable=False)
     category = Column(String, nullable=False)
     note = Column(String, default="")
-    type = Column(String, default="expense")  # "income" или "expense"
-    date = Column(Date, default=date.today)  # ← ДОБАВИТЬ ЭТО ПОЛЕ!
-    created_at = Column(DateTime, default=datetime.utcnow)
+    type = Column(String, default="expense") 
+    date = Column(Date, default=date.today)          # ← поле называется date (SQLAlchemy)
     owner_id = Column(Integer, ForeignKey("users.id"))
     owner = relationship("User", back_populates="transactions")
 

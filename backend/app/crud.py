@@ -2,8 +2,10 @@ from sqlalchemy.orm import Session
 from . import models, schemas
 from passlib.context import CryptContext
 import random
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta, date   # ← прямой импорт date
 from .models import EmailVerification
+import json
+from typing import List
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -17,19 +19,14 @@ def get_user_statistics(
     start_date: date = None,
     end_date: date = None
 ):
-    """
-    Получает статистику пользователя.
-    """
     try:
         now = datetime.utcnow().date()
         
-        # Если даты явно переданы - используем их
         if start_date and end_date:
             filter_start = datetime.combine(start_date, datetime.min.time())
             filter_end = datetime.combine(end_date, datetime.max.time())
             print(f"  📅 Используются явные даты: {start_date} - {end_date}")
         else:
-            # Иначе вычисляем по period
             if period == "day":
                 start = now - timedelta(days=1)
                 end = now
@@ -50,7 +47,6 @@ def get_user_statistics(
             filter_end = datetime.combine(end, datetime.max.time())
             print(f"  📅 Используется period '{period}': {start} - {end}")
 
-        # Получаем транзакции
         transactions = db.query(models.Transaction).filter(
             models.Transaction.owner_id == owner_id,
             models.Transaction.date >= filter_start.date(),
@@ -88,13 +84,8 @@ def get_user_statistics(
         traceback.print_exc()
         raise
 
-# ... остальные функции ...
-
 def create_user(db: Session, user: schemas.UserCreate):
-    from passlib.context import CryptContext
-    pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-    
-    hashed = pwd_context.hash(user.password[:72])
+    hashed = pwd_context.hash(user.password)
     db_user = models.User(
         email=user.email,
         hashed_password=hashed,
@@ -102,14 +93,12 @@ def create_user(db: Session, user: schemas.UserCreate):
         is_verified=getattr(user, "is_verified", False)
     )
     db.add(db_user)
-    
     try:
         db.commit()
     except Exception as e:
         db.rollback()
         print(f"Ошибка при создании пользователя: {e}")
         raise e
-    
     db.refresh(db_user)
     return db_user
 
@@ -117,14 +106,12 @@ def verify_password(plain: str, hashed: str):
     return pwd_context.verify(plain, hashed)
 
 def create_transaction(db: Session, owner_id: int, tx: schemas.TransactionCreate):
-    from datetime import date
-    
     db_tx = models.Transaction(
         amount=tx.amount,
         category=tx.category,
         note=tx.note,
         type=tx.type,
-        date=tx.date or date.today(),  # ← используем переданную дату или сегодня
+        date=tx.date or date.today(),   # ← date.today() работает
         owner_id=owner_id
     )
     db.add(db_tx)
@@ -135,7 +122,7 @@ def create_transaction(db: Session, owner_id: int, tx: schemas.TransactionCreate
 def get_transactions_for_user(db: Session, owner_id: int):
     return db.query(models.Transaction).filter(
         models.Transaction.owner_id == owner_id
-    ).order_by(models.Transaction.created_at.desc()).all()
+    ).order_by(models.Transaction.date.desc()).all()
 
 def create_email_verification(db: Session, email: str, password: str, name: str):
     code = str(random.randint(100000, 999999))
@@ -164,15 +151,44 @@ def verify_email_code(db: Session, email: str, code: str):
     if not record:
         return None
 
-    from . import crud, schemas
     user_data = schemas.UserCreate(
         email=record.email,
         password=record.password,
         name=record.name
     )
-    crud.create_user(db, user_data)
+    create_user(db, user_data)   # ← используем уже определённую функцию
 
     db.delete(record)
     db.commit()
-
     return True
+
+def export_transactions(db: Session, owner_id: int):
+    transactions = db.query(models.Transaction).filter(
+        models.Transaction.owner_id == owner_id
+    ).all()
+
+    return [
+        {
+            "amount": t.amount,
+            "category": t.category,
+            "note": t.note,
+            "type": t.type,
+            "date": t.date.isoformat()
+        }
+        for t in transactions
+    ]
+
+
+def import_transactions(db: Session, owner_id: int, data: List[schemas.TransactionExport]):
+    for t in data:
+        db_tx = models.Transaction(
+            amount=t.amount,
+            category=t.category,
+            note=t.note,
+            type=t.type,
+            date=t.date,
+            owner_id=owner_id
+        )
+        db.add(db_tx)
+
+    db.commit()
