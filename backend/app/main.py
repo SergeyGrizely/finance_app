@@ -1,55 +1,58 @@
-from fastapi import FastAPI, Depends, HTTPException, status, Path, Query
-from sqlalchemy.orm import Session
-from . import database, models, schemas, crud, auth
-from .database import engine, get_db
-from fastapi.security import OAuth2PasswordRequestForm
-from datetime import timedelta, datetime, date
-from .schemas import StatisticsOut
-from . import email_service
-from fastapi import Body
-from .email_service import send_code, generate_code
-from fastapi import BackgroundTasks
-from fastapi import UploadFile, File
 import json
+from datetime import datetime
 from typing import List
 
+from fastapi import BackgroundTasks, Body, Depends, FastAPI, File, HTTPException, Path, Query, UploadFile, status
+from fastapi.security import OAuth2PasswordRequestForm
+from sqlalchemy.orm import Session
+
+from . import auth, crud, email_service, models, schemas
+from .database import engine, get_db
+from .schema_init import ensure_schema
+
 models.Base.metadata.create_all(bind=engine)
+ensure_schema(engine)
 
 app = FastAPI(title="Finance API")
+
+
+def _handle_value_error(exc: ValueError):
+    raise HTTPException(status_code=400, detail=str(exc)) from exc
+
 
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
-# регистрация и верификация (без изменений, но проверьте импорты)
+
 @app.post("/register/request")
 def request_registration(
     background_tasks: BackgroundTasks,
     email: str = Body(...),
     password: str = Body(...),
     name: str = Body(...),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     if crud.get_user_by_email(db, email):
         raise HTTPException(status_code=400, detail="Email уже зарегистрирован")
 
     code = crud.create_email_verification(db, email, password, name)
-
     background_tasks.add_task(email_service.send_code, email, code)
-
     return {"detail": "Код отправлен на email"}
+
 
 @app.post("/register/confirm")
 def confirm_registration(
     email: str = Body(...),
     code: str = Body(...),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
-    from .models import EmailVerification  # если нужно, но можно импортировать сверху
+    from .models import EmailVerification
+
     record = db.query(EmailVerification).filter(
         EmailVerification.email == email,
         EmailVerification.code == code,
-        EmailVerification.expires_at > datetime.utcnow()
+        EmailVerification.expires_at > datetime.utcnow(),
     ).first()
 
     if not record:
@@ -59,7 +62,7 @@ def confirm_registration(
         email=record.email,
         password=record.password,
         name=record.name,
-        is_verified=True
+        is_verified=True,
     )
     user = crud.create_user(db, user_data)
 
@@ -68,168 +71,263 @@ def confirm_registration(
 
     return {"detail": "Регистрация успешна", "user_id": user.id}
 
+
 @app.get("/profile", response_model=schemas.UserOut)
-def get_profile(current_user = Depends(auth.get_current_user)):
+def get_profile(current_user=Depends(auth.get_current_user)):
     return current_user
 
+
 @app.post("/token", response_model=schemas.Token)
-def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+def login_for_access_token(
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    db: Session = Depends(get_db),
+):
     user = auth.authenticate_user(db, form_data.username, form_data.password)
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect credentials")
-    access_token_expires = timedelta(minutes=1440)
-    access_token = auth.create_access_token(data={"sub": user.email}, expires_delta=access_token_expires)
+    access_token = auth.create_access_token(data={"sub": user.email})
     return {"access_token": access_token, "token_type": "bearer"}
 
-@app.put("/profile")
-def update_profile(
-    name: str = None,
-    current_user = Depends(auth.get_current_user),
-    db: Session = Depends(get_db)
-):
-    pass
 
 @app.get("/statistics", response_model=schemas.StatisticsOut)
 def get_statistics(
     period: str = Query("month"),
     start_date: str = Query(None),
     end_date: str = Query(None),
-    current_user = Depends(auth.get_current_user),
-    db: Session = Depends(get_db)
+    current_user=Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
 ):
     start = None
     end = None
-    
+
     if start_date:
         try:
             start = datetime.fromisoformat(start_date).date()
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Неверный формат start_date (используйте YYYY-MM-DD)")
-    
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Неверный формат start_date (используйте YYYY-MM-DD)") from exc
+
     if end_date:
         try:
             end = datetime.fromisoformat(end_date).date()
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Неверный формат end_date (используйте YYYY-MM-DD)")
-    
-    print(f"📊 API: period={period}, start={start}, end={end}, user={current_user.id}")
-    
-    stats = crud.get_user_statistics(
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Неверный формат end_date (используйте YYYY-MM-DD)") from exc
+
+    return crud.get_user_statistics(
         db=db,
         owner_id=current_user.id,
         period=period,
         start_date=start,
-        end_date=end
+        end_date=end,
     )
-    return stats
+
+
+@app.post("/categories", response_model=schemas.CategoryOut)
+def create_category(
+    category: schemas.CategoryCreate,
+    current_user=Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        return crud.create_category(db, user_id=current_user.id, category=category)
+    except ValueError as exc:
+        _handle_value_error(exc)
+
+
+@app.get("/categories", response_model=List[schemas.CategoryOut])
+def list_categories(
+    current_user=Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    return crud.get_categories_for_user(db, user_id=current_user.id)
+
+
+@app.post("/accounts", response_model=schemas.AccountOut)
+def create_account(
+    account: schemas.AccountCreate,
+    current_user=Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    return crud.create_account(db, user_id=current_user.id, account=account)
+
+
+@app.get("/accounts", response_model=List[schemas.AccountOut])
+def list_accounts(
+    current_user=Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    return crud.get_accounts_for_user(db, user_id=current_user.id)
+
+
+@app.put("/accounts/{account_id}", response_model=schemas.AccountOut)
+def update_account(
+    account_id: int,
+    account: schemas.AccountUpdate,
+    current_user=Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    updated = crud.update_account(db, user_id=current_user.id, account_id=account_id, account=account)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Account not found")
+    return updated
+
+
+@app.post("/budgets", response_model=schemas.BudgetOut)
+def create_budget(
+    budget: schemas.BudgetCreate,
+    current_user=Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        return crud.create_budget(db, user_id=current_user.id, budget=budget)
+    except ValueError as exc:
+        _handle_value_error(exc)
+
+
+@app.get("/budgets", response_model=List[schemas.BudgetOut])
+def list_budgets(
+    current_user=Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    return crud.get_budgets_for_user(db, user_id=current_user.id)
+
+
+@app.put("/budgets/{budget_id}", response_model=schemas.BudgetOut)
+def update_budget(
+    budget_id: int,
+    budget: schemas.BudgetUpdate,
+    current_user=Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        updated = crud.update_budget(db, user_id=current_user.id, budget_id=budget_id, budget=budget)
+    except ValueError as exc:
+        _handle_value_error(exc)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Budget not found")
+    return updated
+
 
 @app.get("/transactions/export")
 def export_transactions(
-    current_user = Depends(auth.get_current_user),
-    db: Session = Depends(get_db)
+    current_user=Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
 ):
-    transactions = db.query(models.Transaction).filter(
-        models.Transaction.owner_id == current_user.id
-    ).all()
+    return crud.export_transactions(db, owner_id=current_user.id)
 
-    return [
-        {
-            "amount": t.amount,
-            "category": t.category,
-            "note": t.note,
-            "type": t.type,
-            "date": t.date.isoformat()
-        }
-        for t in transactions
-    ]
 
 @app.post("/transactions/import")
 async def import_transactions(
     file: UploadFile = File(...),
-    current_user = Depends(auth.get_current_user),
-    db: Session = Depends(get_db)
+    current_user=Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
 ):
     try:
         content = await file.read()
-        data = json.loads(content)
-
-        for item in data:
-            tx = models.Transaction(
-                amount=item["amount"],
-                category=item["category"],
-                note=item.get("note", ""),
-                type=item.get("type", "expense"),
-                date=date.fromisoformat(item["date"]),
-                owner_id=current_user.id
-            )
-            db.add(tx)
-
-        db.commit()
-
+        raw_data = json.loads(content)
+        data = [schemas.TransactionExport(**item) for item in raw_data]
+        crud.import_transactions(db, owner_id=current_user.id, data=data)
         return {"message": "Импорт выполнен"}
+    except ValueError as exc:
+        _handle_value_error(exc)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Ошибка импорта: {exc}") from exc
 
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Ошибка импорта: {e}")
 
 @app.post("/transactions", response_model=schemas.TransactionOut)
 def create_transaction(
     tx: schemas.TransactionCreate,
-    current_user = Depends(auth.get_current_user),
-    db: Session = Depends(get_db)
+    current_user=Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
 ):
-    return crud.create_transaction(db, owner_id=current_user.id, tx=tx)
+    try:
+        return crud.create_transaction(db, owner_id=current_user.id, tx=tx)
+    except ValueError as exc:
+        _handle_value_error(exc)
 
-@app.get("/transactions", response_model=list[schemas.TransactionOut])
+
+@app.get("/transactions", response_model=List[schemas.TransactionOut])
 def list_transactions(
-    current_user = Depends(auth.get_current_user),
-    db: Session = Depends(get_db)
+    current_user=Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
 ):
     return crud.get_transactions_for_user(db, owner_id=current_user.id)
+
 
 @app.put("/transactions/{tx_id}", response_model=schemas.TransactionOut)
 def update_transaction(
     tx_id: int,
     tx: schemas.TransactionUpdate,
-    current_user = Depends(auth.get_current_user),
-    db: Session = Depends(get_db)
+    current_user=Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
 ):
-    db_tx = db.query(models.Transaction).filter(
-        models.Transaction.id == tx_id,
-        models.Transaction.owner_id == current_user.id
-    ).first()
-
-    if not db_tx:
+    try:
+        updated = crud.update_transaction(db, owner_id=current_user.id, tx_id=tx_id, tx=tx)
+    except ValueError as exc:
+        _handle_value_error(exc)
+    if not updated:
         raise HTTPException(status_code=404, detail="Transaction not found")
+    return updated
 
-    if tx.amount is not None:
-        db_tx.amount = tx.amount
-    if tx.category is not None:
-        db_tx.category = tx.category
-    if tx.note is not None:
-        db_tx.note = tx.note
-    if tx.type is not None:
-        db_tx.type = tx.type
-    if tx.date is not None:
-        db_tx.date = tx.date
-
-    db.commit()
-    db.refresh(db_tx)
-    return db_tx
 
 @app.delete("/transactions/{tx_id}", status_code=204)
 def delete_transaction(
     tx_id: int = Path(..., description="ID транзакции"),
-    current_user = Depends(auth.get_current_user),
-    db: Session = Depends(get_db)
+    current_user=Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
 ):
-    tx = db.query(models.Transaction).filter(
-        models.Transaction.id == tx_id,
-        models.Transaction.owner_id == current_user.id
-    ).first()
-    
-    if not tx:
+    deleted = crud.delete_transaction(db, owner_id=current_user.id, tx_id=tx_id)
+    if not deleted:
         raise HTTPException(status_code=404, detail="Transaction not found")
-    
-    db.delete(tx)
-    db.commit()
     return
+
+
+@app.post("/debts", response_model=schemas.DebtOut)
+def create_debt(
+    debt: schemas.DebtCreate,
+    current_user=Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        return crud.create_debt(db, user_id=current_user.id, debt=debt)
+    except ValueError as exc:
+        _handle_value_error(exc)
+
+
+@app.get("/debts", response_model=List[schemas.DebtOut])
+def list_debts(
+    current_user=Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    return crud.get_debts_for_user(db, user_id=current_user.id)
+
+
+@app.put("/debts/{debt_id}", response_model=schemas.DebtOut)
+def update_debt(
+    debt_id: int,
+    debt: schemas.DebtUpdate,
+    current_user=Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        updated = crud.update_debt(db, user_id=current_user.id, debt_id=debt_id, debt=debt)
+    except ValueError as exc:
+        _handle_value_error(exc)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Debt not found")
+    return updated
+
+
+@app.post("/debts/{debt_id}/events", response_model=schemas.DebtEventOut)
+def create_debt_event(
+    debt_id: int,
+    event: schemas.DebtEventCreate,
+    current_user=Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        created = crud.create_debt_event(db, user_id=current_user.id, debt_id=debt_id, event=event)
+    except ValueError as exc:
+        _handle_value_error(exc)
+    if not created:
+        raise HTTPException(status_code=404, detail="Debt not found")
+    return created

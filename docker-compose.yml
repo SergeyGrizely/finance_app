@@ -27,7 +27,7 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg2://postgres:postgres@db:5432/finance
       SMTP_EMAIL: www.eser808@gmail.com
-      SMTP_PASSWORD: juzbtsspqcllgcin
+      SMTP_PASSWORD: gsjlrvxilbilessm
       SMTP_HOST: smtp.gmail.com
       SMTP_PORT: 587
       PYTHONIOENCODING: utf-8
