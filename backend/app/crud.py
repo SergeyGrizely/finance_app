@@ -221,6 +221,44 @@ def update_account(db: Session, user_id: int, account_id: int, account: schemas.
     return db_account
 
 
+def delete_account(db: Session, user_id: int, account_id: int):
+    db_account = db.query(models.Account).filter(
+        models.Account.id == account_id,
+        models.Account.user_id == user_id,
+    ).first()
+    if not db_account:
+        return False
+
+    has_transactions = db.query(models.Transaction.id).filter(
+        models.Transaction.account_id == account_id,
+        models.Transaction.owner_id == user_id,
+    ).first()
+    has_budgets = db.query(models.Budget.id).filter(
+        models.Budget.account_id == account_id,
+        models.Budget.user_id == user_id,
+    ).first()
+    has_debts = db.query(models.Debt.id).filter(
+        models.Debt.account_id == account_id,
+        models.Debt.user_id == user_id,
+    ).first()
+    has_debt_events = (
+        db.query(models.DebtEvent.id)
+        .join(models.Debt, models.Debt.id == models.DebtEvent.debt_id)
+        .filter(
+            models.DebtEvent.account_id == account_id,
+            models.Debt.user_id == user_id,
+        )
+        .first()
+    )
+
+    if has_transactions or has_budgets or has_debts or has_debt_events:
+        raise ValueError("Account is used in transactions, budgets or debts")
+
+    db.delete(db_account)
+    db.commit()
+    return True
+
+
 def create_budget(db: Session, user_id: int, budget: schemas.BudgetCreate):
     if budget.period not in VALID_BUDGET_PERIODS:
         raise ValueError("Invalid budget period")
@@ -453,12 +491,34 @@ def update_debt(db: Session, user_id: int, debt_id: int, debt: schemas.DebtUpdat
 
 
 def delete_debt(db: Session, user_id: int, debt_id: int):
-    debt = db.query(models.Debt).filter(
-        models.Debt.id == debt_id,
-        models.Debt.user_id == user_id,
-    ).first()
+    debt = (
+        db.query(models.Debt)
+        .options(joinedload(models.Debt.events))
+        .filter(
+            models.Debt.id == debt_id,
+            models.Debt.user_id == user_id,
+        )
+        .first()
+    )
     if not debt:
         return False
+
+    for event in debt.events:
+        account = _require_account(
+            db,
+            account_id=event.account_id if event.account_id is not None else debt.account_id,
+            user_id=user_id,
+        )
+        if event.event_type == "issue":
+            _change_account_balance(
+                account,
+                -_debt_issue_account_delta(debt.direction, event.amount),
+            )
+        elif event.event_type == "repayment":
+            _change_account_balance(
+                account,
+                -_debt_repayment_account_delta(debt.direction, event.amount),
+            )
 
     db.delete(debt)
     db.commit()

@@ -174,6 +174,21 @@ def update_account(
     return updated
 
 
+@app.delete("/accounts/{account_id}", status_code=204)
+def delete_account(
+    account_id: int,
+    current_user=Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        deleted = crud.delete_account(db, user_id=current_user.id, account_id=account_id)
+    except ValueError as exc:
+        _handle_value_error(exc)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Account not found")
+    return
+
+
 @app.post("/budgets", response_model=schemas.BudgetOut)
 def create_budget(
     budget: schemas.BudgetCreate,
