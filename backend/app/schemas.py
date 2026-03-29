@@ -114,6 +114,14 @@ class DebtEventCreate(DebtEventBase):
     pass
 
 
+class DebtEventUpdate(BaseModel):
+    event_type: Optional[str] = None
+    amount: Optional[float] = None
+    event_date: Optional[datetime.date] = None
+    note: Optional[str] = None
+    account_id: Optional[int] = None
+
+
 class DebtEventOut(DebtEventBase):
     id: int
     debt_id: int

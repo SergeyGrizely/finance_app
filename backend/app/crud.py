@@ -81,6 +81,12 @@ def _apply_debt_event(debt: models.Debt, event_type: str, amount: float):
     debt.status = "closed" if debt.current_balance == 0 else "open"
 
 
+def _recalculate_debt(debt: models.Debt):
+    debt.current_balance = 0.0
+    for event in sorted(debt.events, key=lambda item: (item.event_date, item.id)):
+        _apply_debt_event(debt, event.event_type, event.amount)
+
+
 def get_user_statistics(
     db: Session,
     owner_id: int,
@@ -332,7 +338,7 @@ def update_transaction(db: Session, owner_id: int, tx_id: int, tx: schemas.Trans
     if new_type not in VALID_TRANSACTION_TYPES:
         raise ValueError("Invalid transaction type")
 
-    _require_category(db, category_id=new_category_id, user_id=owner_id, tx_type=new_type)
+    new_category = _require_category(db, category_id=new_category_id, user_id=owner_id, tx_type=new_type)
     new_account = _require_account(db, account_id=new_account_id, user_id=owner_id)
 
     for key, value in payload.items():
@@ -446,6 +452,19 @@ def update_debt(db: Session, user_id: int, debt_id: int, debt: schemas.DebtUpdat
     return get_debt_for_user(db, user_id=user_id, debt_id=debt_id)
 
 
+def delete_debt(db: Session, user_id: int, debt_id: int):
+    debt = db.query(models.Debt).filter(
+        models.Debt.id == debt_id,
+        models.Debt.user_id == user_id,
+    ).first()
+    if not debt:
+        return False
+
+    db.delete(debt)
+    db.commit()
+    return True
+
+
 def create_debt_event(db: Session, user_id: int, debt_id: int, event: schemas.DebtEventCreate):
     if event.event_type not in VALID_DEBT_EVENT_TYPES:
         raise ValueError("Invalid debt event type")
@@ -483,6 +502,109 @@ def create_debt_event(db: Session, user_id: int, debt_id: int, event: schemas.De
     db.commit()
     db.refresh(db_event)
     return db_event
+
+
+def update_debt_event(
+    db: Session,
+    user_id: int,
+    debt_id: int,
+    event_id: int,
+    event: schemas.DebtEventUpdate,
+):
+    debt = db.query(models.Debt).filter(
+        models.Debt.id == debt_id,
+        models.Debt.user_id == user_id,
+    ).first()
+    if not debt:
+        return None
+
+    db_event = db.query(models.DebtEvent).filter(
+        models.DebtEvent.id == event_id,
+        models.DebtEvent.debt_id == debt_id,
+    ).first()
+    if not db_event:
+        return None
+
+    payload = event.model_dump(exclude_unset=True)
+    if "event_type" in payload and payload["event_type"] not in VALID_DEBT_EVENT_TYPES:
+        raise ValueError("Invalid debt event type")
+    if "account_id" in payload:
+        _require_account(db, account_id=payload["account_id"], user_id=user_id)
+
+    old_account = _require_account(
+        db,
+        account_id=db_event.account_id if db_event.account_id is not None else debt.account_id,
+        user_id=user_id,
+    )
+    if db_event.event_type == "issue":
+        _change_account_balance(
+            old_account,
+            -_debt_issue_account_delta(debt.direction, db_event.amount),
+        )
+    elif db_event.event_type == "repayment":
+        _change_account_balance(
+            old_account,
+            -_debt_repayment_account_delta(debt.direction, db_event.amount),
+        )
+
+    for key, value in payload.items():
+        setattr(db_event, key, value)
+
+    new_account = _require_account(
+        db,
+        account_id=db_event.account_id if db_event.account_id is not None else debt.account_id,
+        user_id=user_id,
+    )
+    if db_event.event_type == "issue":
+        _change_account_balance(
+            new_account,
+            _debt_issue_account_delta(debt.direction, db_event.amount),
+        )
+    elif db_event.event_type == "repayment":
+        _change_account_balance(
+            new_account,
+            _debt_repayment_account_delta(debt.direction, db_event.amount),
+        )
+
+    _recalculate_debt(debt)
+    db.commit()
+    db.refresh(db_event)
+    return db_event
+
+
+def delete_debt_event(db: Session, user_id: int, debt_id: int, event_id: int):
+    debt = db.query(models.Debt).filter(
+        models.Debt.id == debt_id,
+        models.Debt.user_id == user_id,
+    ).first()
+    if not debt:
+        return False
+
+    db_event = db.query(models.DebtEvent).filter(
+        models.DebtEvent.id == event_id,
+        models.DebtEvent.debt_id == debt_id,
+    ).first()
+    if not db_event:
+        return False
+
+    account = _require_account(
+        db,
+        account_id=db_event.account_id if db_event.account_id is not None else debt.account_id,
+        user_id=user_id,
+    )
+    if db_event.event_type == "issue":
+        _change_account_balance(account, -_debt_issue_account_delta(debt.direction, db_event.amount))
+    elif db_event.event_type == "repayment":
+        _change_account_balance(
+            account,
+            -_debt_repayment_account_delta(debt.direction, db_event.amount),
+        )
+
+    db.delete(db_event)
+    db.flush()
+    _recalculate_debt(debt)
+    db.commit()
+    return True
 
 
 def create_email_verification(db: Session, email: str, password: str, name: str):

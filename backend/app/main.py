@@ -1,9 +1,12 @@
 import json
+from io import BytesIO
 from datetime import datetime
 from typing import List
 
 from fastapi import BackgroundTasks, Body, Depends, FastAPI, File, HTTPException, Path, Query, UploadFile, status
+from fastapi.responses import StreamingResponse
 from fastapi.security import OAuth2PasswordRequestForm
+from openpyxl import Workbook, load_workbook
 from sqlalchemy.orm import Session
 
 from . import auth, crud, email_service, models, schemas
@@ -212,7 +215,34 @@ def export_transactions(
     current_user=Depends(auth.get_current_user),
     db: Session = Depends(get_db),
 ):
-    return crud.export_transactions(db, owner_id=current_user.id)
+    rows = crud.export_transactions(db, owner_id=current_user.id)
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Transactions"
+    sheet.append(
+        ["amount", "category_id", "category_name", "account_id", "note", "type", "date"]
+    )
+    for row in rows:
+        sheet.append(
+            [
+                row["amount"],
+                row["category_id"],
+                row["category_name"],
+                row["account_id"],
+                row["note"],
+                row["type"],
+                row["date"],
+            ]
+        )
+
+    output = BytesIO()
+    workbook.save(output)
+    output.seek(0)
+    return StreamingResponse(
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="transactions.xlsx"'},
+    )
 
 
 @app.post("/transactions/import")
@@ -223,7 +253,26 @@ async def import_transactions(
 ):
     try:
         content = await file.read()
-        raw_data = json.loads(content)
+        filename = (file.filename or "").lower()
+        if filename.endswith(".xlsx"):
+            workbook = load_workbook(filename=BytesIO(content), data_only=True)
+            sheet = workbook.active
+            rows = list(sheet.iter_rows(values_only=True))
+            if not rows:
+                raise HTTPException(status_code=400, detail="Empty file")
+            headers = [str(value).strip() if value is not None else "" for value in rows[0]]
+            raw_data = []
+            for row in rows[1:]:
+                if row is None or all(cell in (None, "") for cell in row):
+                    continue
+                item = {}
+                for index, header in enumerate(headers):
+                    if not header:
+                        continue
+                    item[header] = row[index] if index < len(row) else None
+                raw_data.append(item)
+        else:
+            raw_data = json.loads(content)
         data = [schemas.TransactionExport(**item) for item in raw_data]
         crud.import_transactions(db, owner_id=current_user.id, data=data)
         return {"message": "Импорт выполнен"}
@@ -317,6 +366,18 @@ def update_debt(
     return updated
 
 
+@app.delete("/debts/{debt_id}", status_code=204)
+def delete_debt(
+    debt_id: int,
+    current_user=Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    deleted = crud.delete_debt(db, user_id=current_user.id, debt_id=debt_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Debt not found")
+    return
+
+
 @app.post("/debts/{debt_id}/events", response_model=schemas.DebtEventOut)
 def create_debt_event(
     debt_id: int,
@@ -331,3 +392,44 @@ def create_debt_event(
     if not created:
         raise HTTPException(status_code=404, detail="Debt not found")
     return created
+
+
+@app.put("/debts/{debt_id}/events/{event_id}", response_model=schemas.DebtEventOut)
+def update_debt_event(
+    debt_id: int,
+    event_id: int,
+    event: schemas.DebtEventUpdate,
+    current_user=Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        updated = crud.update_debt_event(
+            db,
+            user_id=current_user.id,
+            debt_id=debt_id,
+            event_id=event_id,
+            event=event,
+        )
+    except ValueError as exc:
+        _handle_value_error(exc)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Debt event not found")
+    return updated
+
+
+@app.delete("/debts/{debt_id}/events/{event_id}", status_code=204)
+def delete_debt_event(
+    debt_id: int,
+    event_id: int,
+    current_user=Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    deleted = crud.delete_debt_event(
+        db,
+        user_id=current_user.id,
+        debt_id=debt_id,
+        event_id=event_id,
+    )
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Debt event not found")
+    return
